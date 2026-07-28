@@ -7,12 +7,14 @@ from PIL import Image
 
 from app.beats import apply_plan, build_beats, heuristic_plan
 from app.config import Settings
+from app.frame_selection import choose_best_frame
 from app.image_styler import stylize_panel
 from app.layout import compose_comic
-from app.media import assert_ffmpeg_available, extract_audio, extract_frame, probe_duration
-from app.models import JobManifest
+from app.media import assert_ffmpeg_available, extract_audio, probe_duration
+from app.models import Beat, JobManifest
 from app.openrouter_client import plan_panels
 from app.transcribe import transcribe_words
+from app.vision import choose_best_candidate
 
 
 class PipelineError(RuntimeError):
@@ -38,8 +40,10 @@ def generate_comic(
     job_id = uuid.uuid4().hex[:12]
     job_dir = settings.work_dir / job_id
     frames_dir = job_dir / "frames"
+    candidates_dir = job_dir / "frame-candidates"
     panels_dir = job_dir / "panels"
     frames_dir.mkdir(parents=True)
+    candidates_dir.mkdir(parents=True)
     panels_dir.mkdir(parents=True)
 
     video_copy = job_dir / f"input{video_path.suffix.lower()}"
@@ -70,21 +74,38 @@ def generate_comic(
     if not selected_beats:
         raise PipelineError("Panel planning produced no usable panels")
 
+    selection_debug: dict[str, object] = {"panels": []}
     output_panels: list[Path] = []
     for position, beat in enumerate(selected_beats):
         source_frame = frames_dir / f"{position:02d}.jpg"
         styled_frame = panels_dir / f"{position:02d}.png"
-        extract_frame(video_copy, min(duration - 0.05, beat.frame_time), source_frame)
+
+        chosen_frame, selection_info = _select_source_frame(
+            video_copy,
+            beat,
+            duration,
+            candidates_dir / f"panel-{position:02d}",
+            source_frame,
+        )
+        selection_debug["panels"].append(
+            {
+                "panel_index": position,
+                "beat_index": beat.index,
+                "beat_text": beat.text,
+                **selection_info,
+                "final_source_frame": chosen_frame.name,
+            }
+        )
 
         if settings.skip_stylization:
-            Image.open(source_frame).convert("RGB").save(styled_frame, "PNG")
+            Image.open(chosen_frame).convert("RGB").save(styled_frame, "PNG")
         else:
             if not settings.openai_api_key:
                 raise PipelineError(
                     "OPENAI_API_KEY is required unless SKIP_STYLIZATION=true"
                 )
             stylize_panel(
-                source_frame,
+                chosen_frame,
                 style_copy,
                 styled_frame,
                 panel_kind=beat.kind,
@@ -109,7 +130,49 @@ def generate_comic(
     (job_dir / "transcript.json").write_text(
         json.dumps([word.model_dump() for word in words], indent=2), encoding="utf-8"
     )
+    (job_dir / "frame-selection.json").write_text(
+        json.dumps(selection_debug, indent=2), encoding="utf-8"
+    )
     return manifest
+
+
+def _candidate_times(beat: Beat, clip_duration: float) -> list[float]:
+    duration = max(0.15, beat.end - beat.start)
+    anchors = [0.15, 0.35, 0.55, 0.78, 0.92]
+    times = []
+    for anchor in anchors:
+        timestamp = beat.start + duration * anchor
+        times.append(min(max(0.0, timestamp), max(0.0, clip_duration - 0.05)))
+    # Preserve the originally computed frame time as an explicit candidate.
+    times.append(min(max(0.0, beat.frame_time), max(0.0, clip_duration - 0.05)))
+    # Dedupe while preserving order.
+    unique: list[float] = []
+    seen = set()
+    for timestamp in times:
+        rounded = round(timestamp, 3)
+        if rounded not in seen:
+            unique.append(timestamp)
+            seen.add(rounded)
+    return unique
+
+
+def _select_source_frame(
+    video_path: Path,
+    beat: Beat,
+    clip_duration: float,
+    candidate_dir: Path,
+    destination: Path,
+) -> tuple[Path, dict[str, object]]:
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    candidates: list[tuple[Path, float]] = []
+    for index, timestamp in enumerate(_candidate_times(beat, clip_duration)):
+        candidate_path = candidate_dir / f"candidate-{index:02d}.jpg"
+        extract_frame(video_path, timestamp, candidate_path)
+        candidates.append((candidate_path, timestamp))
+
+    best_path, debug = choose_best_candidate(candidates)
+    shutil.copy2(best_path, destination)
+    return destination, debug
 
 
 def _validate_style_reference(path: Path) -> None:

@@ -9,9 +9,10 @@ A deliberately narrow local app that converts a short spoken-performance clip pl
 3. Groups words into timed narrative beats.
 4. Uses OpenRouter structured output to choose and rank up to six panels.
    - If no OpenRouter key is configured, deterministic heuristics take over.
-5. Extracts one video frame near the expressive end of each selected beat.
-6. Sends each frame plus the style reference to OpenAI's image-edit endpoint.
-7. Builds a deterministic 1536×2048 comic page locally with readable speech bubbles.
+5. Extracts multiple candidate frames for each selected beat and scores them locally.
+6. Prefers frames that are sharper, better composed, and more likely to leave room for a speech bubble.
+7. Sends the chosen frame plus the style reference to OpenAI's image-edit endpoint.
+8. Builds a deterministic 1536×2048 comic page locally with bubble-aware placement and readable speech bubbles.
 
 The image model never renders the lettering. This is intentional; exact text is software's job, not a probabilistic art goblin's.
 
@@ -21,8 +22,16 @@ The image model never renders the lettering. This is intentional; exact text is 
 - Hard limit defaults to 120 seconds.
 - One page, up to six panels.
 - No speaker diarization yet.
-- Frame selection is timestamp-based, not facial-expression scoring.
+- Frame selection is quality-scored, but still lightweight rather than semantically omniscient.
 - Every panel is stylized independently, so visual continuity can vary.
+
+## Improvements in this build
+
+- **Better frame selection**: each beat now samples several timestamps and chooses the best candidate using sharpness, face prominence, composition, and available bubble space.
+- **Bubble-aware composition**: bubbles evaluate multiple candidate positions and try to avoid faces while seeking visually quieter regions.
+- **Smaller typography under pressure**: long lines now shrink more aggressively before they engulf the entire panel like a bureaucratic memo.
+- **Better crop behavior**: panels use face-aware centering when being fit into comic rectangles, which tends to reduce accidental emphasis on watermarks and platform furniture.
+- **Debuggability**: each job saves `frame-selection.json` plus the candidate frames used in scoring.
 
 ## Requirements
 
@@ -86,17 +95,19 @@ SKIP_STYLIZATION=true
 OPENROUTER_API_KEY=
 ```
 
-That tests upload, FFmpeg, transcription, beat grouping, frame extraction, page layout, and speech bubbles without paid calls.
+That tests upload, FFmpeg, transcription, beat grouping, frame extraction, frame scoring, page layout, and speech bubbles without paid calls.
 
 Generated jobs live in `var/jobs/<job-id>/` and include:
 
 - source video and style reference
 - extracted WAV
-- source frames
+- selected source frames
+- candidate frames under `frame-candidates/`
 - generated panel images
 - `comic.png`
 - `manifest.json`
 - word-level `transcript.json`
+- frame scoring details in `frame-selection.json`
 - `openrouter-error.txt` when the editorial request fails and heuristics take over
 
 ## API
@@ -122,4 +133,4 @@ pytest
 
 ## Likely next upgrades
 
-The highest-value upgrades are expression-aware frame selection, audience-laughter detection, speaker diarization, and an intermediate editable panel plan. Do not build all four simultaneously unless suffering has become a product requirement.
+The highest-value upgrades are speaker diarization, laughter detection, better visual expression scoring, and an editable intermediate panel plan. Resist the urge to implement all four in one caffeinated spiral.

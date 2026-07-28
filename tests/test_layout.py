@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
-from app.layout import compose_comic
+from app.layout import _choose_bubble_anchor, compose_comic
 from app.models import Beat, WordTiming
 
 
@@ -35,3 +35,14 @@ def test_compose_comic(tmp_path: Path) -> None:
     assert output.exists()
     with Image.open(output) as result:
         assert result.size == (1536, 2048)
+
+
+def test_choose_bubble_anchor_prefers_empty_corner() -> None:
+    image = Image.new("RGB", (600, 400), (240, 240, 240))
+    draw = ImageDraw.Draw(image)
+    # Make the left side busy with visible edges so the bubble logic should prefer top-right.
+    for step in range(0, 280, 18):
+        draw.line((step, 0, step, 240), fill=(30, 30, 30), width=4)
+        draw.line((0, step, 280, step), fill=(30, 30, 30), width=4)
+    anchor = _choose_bubble_anchor(image, 220, 110)
+    assert anchor == "top-right"
