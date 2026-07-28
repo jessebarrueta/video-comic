@@ -54,6 +54,7 @@ class JobManifest(BaseModel):
     comic_paths: list[str] = Field(default_factory=list)
     page_count: int = 1
     panels: list[GeneratedPanel] = Field(default_factory=list)
+    style_strength: str = "balanced"
     used_openrouter: bool
     used_stylization: bool
 
@@ -61,3 +62,4 @@ class JobManifest(BaseModel):
 class RegeneratePanelRequest(BaseModel):
     bubble_text: str | None = None
     prompt_suffix: str | None = None
+    style_strength: str | None = None

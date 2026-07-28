@@ -25,6 +25,8 @@ def generate_comic(
     video_path: Path,
     style_reference_path: Path,
     settings: Settings,
+    *,
+    style_strength: str = "balanced",
 ) -> JobManifest:
     assert_ffmpeg_available()
     _validate_style_reference(style_reference_path)
@@ -96,13 +98,15 @@ def generate_comic(
                 raise PipelineError(
                     "OPENAI_API_KEY is required unless SKIP_STYLIZATION=true"
                 )
-            stylize_panel(
+            prompt_used = stylize_panel(
                 source_frame,
                 style_copy,
                 styled_frame,
                 panel_kind=beat.kind,
                 settings=settings,
+                style_strength=style_strength,
             )
+            (panels_dir / f"{position:02d}.prompt.txt").write_text(prompt_used, encoding="utf-8")
 
         panels.append(
             GeneratedPanel(
@@ -123,6 +127,7 @@ def generate_comic(
         comic_paths=[],
         page_count=0,
         panels=panels,
+        style_strength=style_strength,
         used_openrouter=used_openrouter,
         used_stylization=not settings.skip_stylization,
     )
@@ -150,19 +155,26 @@ def regenerate_panel(
     if request.bubble_text:
         panel.beat.bubble_text = request.bubble_text.strip()
 
+    effective_style_strength = request.style_strength or manifest.style_strength
+
     if settings.skip_stylization:
         Image.open(source_path).convert("RGB").save(styled_path, "PNG")
     else:
         if not settings.openai_api_key:
             raise PipelineError("OPENAI_API_KEY is required to regenerate stylized panels")
-        stylize_panel(
+        prompt_used = stylize_panel(
             source_path,
             style_path,
             styled_path,
             panel_kind=panel.beat.kind,
             settings=settings,
             prompt_suffix=request.prompt_suffix,
+            style_strength=effective_style_strength,
         )
+        prompt_path = _job_fs_path(job_dir, panel.styled_frame).with_suffix(".prompt.txt")
+        prompt_path.write_text(prompt_used, encoding="utf-8")
+
+    manifest.style_strength = effective_style_strength
 
     panel.face_boxes = detect_faces_path(source_path)
     manifest.beats = [item.beat for item in manifest.panels]

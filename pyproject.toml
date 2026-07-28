@@ -7,7 +7,7 @@ name = "video-comic-mvp"
 version = "0.1.0"
 description = "Turn a short performance video and style reference into a comic page."
 readme = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",

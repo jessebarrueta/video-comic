@@ -1,9 +1,8 @@
-import logging
 import shutil
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -16,7 +15,6 @@ BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 STATIC_DIR = BASE_DIR / "static"
 settings = get_settings()
-logger = logging.getLogger(__name__)
 DEVTOOLS_WORKSPACE_FILE = ensure_devtools_workspace_file(PROJECT_ROOT)
 
 app = FastAPI(title="Video Comic MVP", version="0.2.0")
@@ -61,6 +59,7 @@ def health() -> dict[str, object]:
 def generate(
     video: UploadFile = File(...),
     style_reference: UploadFile = File(...),
+    style_strength: str = Form("balanced"),
 ) -> dict[str, object]:
     video_suffix = _safe_suffix(video.filename, {".mp4", ".mov", ".m4v", ".webm"})
     style_suffix = _safe_suffix(
@@ -75,11 +74,10 @@ def generate(
         _copy_upload(style_reference, style_path)
 
         try:
-            manifest = generate_comic(video_path, style_path, settings)
+            manifest = generate_comic(video_path, style_path, settings, style_strength=style_strength)
         except PipelineError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
-            logger.exception("Comic generation failed")
             raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
 
     return manifest.model_dump()
@@ -101,7 +99,6 @@ def regenerate_job_panel(job_id: str, panel_index: int, request: RegeneratePanel
     except PipelineError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        logger.exception("Panel regeneration failed")
         raise HTTPException(status_code=500, detail=f"Regeneration failed: {exc}") from exc
     return manifest.model_dump()
 

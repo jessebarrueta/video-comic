@@ -69,7 +69,17 @@ h1 {
 
 .drop span { font-size: 20px; font-weight: 800; }
 .drop small { color: #666055; }
-.drop input { margin-top: 8px; }
+.drop input, .drop select { margin-top: 8px; }
+.drop.compact { padding: 18px 22px; }
+
+select {
+  width: 100%;
+  border-radius: 12px;
+  border: 2px solid #9b958b;
+  padding: 12px;
+  font: inherit;
+  background: rgba(255,255,255,.92);
+}
 
 button, a#download, .download-inline {
   justify-self: start;
@@ -155,7 +165,7 @@ button:disabled { opacity: .55; cursor: wait; }
   aspect-ratio: 1 / 1;
 }
 
-.panel-card textarea {
+.panel-card textarea, .panel-card select {
   width: 100%;
   border-radius: 12px;
   border: 2px solid #9b958b;
@@ -171,6 +181,8 @@ button:disabled { opacity: .55; cursor: wait; }
   align-items: center;
   flex-wrap: wrap;
 }
+
+.mini.stacked { display: grid; gap: 6px; }
 
 .mini {
   font-size: 13px;

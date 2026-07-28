@@ -1,47 +1,47 @@
 from __future__ import annotations
 
-import json
-import subprocess
-import sys
-import tempfile
 from pathlib import Path
 
 from PIL import Image
 
 from app.models import FaceBox
 
+try:
+    import cv2  # type: ignore
+except Exception:  # pragma: no cover - dependency is optional at runtime
+    cv2 = None
+
 
 def detect_faces_path(image_path: Path) -> list[FaceBox]:
-    """Detect faces in an isolated process.
-
-    OpenCV and Faster Whisper/PyAV each bundle FFmpeg libraries on macOS. Loading
-    both into one Python process can register duplicate Objective-C AVFoundation
-    classes and cause crashes. Keeping OpenCV in a short-lived worker process
-    prevents those native libraries from sharing an address space.
-    """
-    worker_path = Path(__file__).with_name("face_worker.py")
-    try:
-        result = subprocess.run(
-            [sys.executable, str(worker_path), str(image_path)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        output = result.stdout.strip()
-        if not output:
-            return []
-        payload = json.loads(output.splitlines()[-1])
-        return [FaceBox.model_validate(item) for item in payload.get("faces", [])]
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
-        # Face detection is a layout enhancement, not a reason to fail the job.
-        return []
+    with Image.open(image_path) as image:
+        return detect_faces_image(image)
 
 
 def detect_faces_image(image: Image.Image) -> list[FaceBox]:
-    with tempfile.NamedTemporaryFile(suffix=".png") as temporary:
-        image.convert("RGB").save(temporary.name, "PNG")
-        return detect_faces_path(Path(temporary.name))
+    if cv2 is None:
+        return []
+
+    gray = cv2.cvtColor(_pil_to_bgr(image), cv2.COLOR_BGR2GRAY)
+    classifier = cv2.CascadeClassifier(
+        str(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml")
+    )
+    faces = classifier.detectMultiScale(
+        gray,
+        scaleFactor=1.08,
+        minNeighbors=5,
+        minSize=(40, 40),
+    )
+    results = [FaceBox(x=int(x), y=int(y), w=int(w), h=int(h)) for x, y, w, h in faces]
+    results.sort(key=lambda box: box.w * box.h, reverse=True)
+    return results
+
+
+def _pil_to_bgr(image: Image.Image):
+    import numpy as np
+
+    rgb = image.convert("RGB")
+    array = np.array(rgb)
+    return cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
 
 
 def choose_best_candidate(candidates: list[tuple[Path, float]]):

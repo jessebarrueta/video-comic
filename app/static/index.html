@@ -30,6 +30,17 @@
           <input id="style" name="style_reference" type="file" accept="image/*" required />
         </label>
 
+
+        <label class="drop compact">
+          <span>Style strength</span>
+          <small>How strongly the output should follow the reference image style</small>
+          <select id="style-strength" name="style_strength">
+            <option value="subtle">Subtle</option>
+            <option value="balanced" selected>Balanced</option>
+            <option value="strong">Strong</option>
+          </select>
+        </label>
+
         <button type="submit">Generate comic</button>
         <p id="status" role="status"></p>
       </form>

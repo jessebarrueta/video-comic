@@ -14,6 +14,7 @@ A deliberately narrow local app that converts a spoken-performance clip plus a s
 7. Sends the chosen frame plus the style reference to OpenAI's image-edit endpoint.
 8. Builds deterministic comic pages locally with face-aware cropping and bubble-aware placement.
 9. Lets you manually regenerate a single panel, optionally refining its art direction or lettering.
+10. Supports a style-strength control so the result can stay subtle or lean harder into the reference image.
 
 The image model never renders the lettering. This is intentional; exact text is software's job, not a probabilistic art goblin's.
 
@@ -155,31 +156,9 @@ Shows whether OpenRouter, OpenAI, and stylization are configured.
 pytest
 ```
 
-## macOS native-library warning / Python version
+## Style matching changes in this build
 
-Use Python **3.11, 3.12, or 3.13** for this project. Python 3.12 is the recommended boring option.
-
-OpenCV and Faster Whisper's PyAV dependency both bundle FFmpeg libraries. Earlier builds loaded both into the FastAPI process on macOS, which could produce duplicate `AVFFrameReceiver` / `AVFAudioReceiver` Objective-C class warnings and unstable crashes. Face detection now runs in an isolated worker process so OpenCV and PyAV do not share the same native address space.
-
-Recreate an existing Python 3.14 environment with Python 3.12:
-
-```bash
-deactivate 2>/dev/null || true
-rm -rf .venv
-brew install python@3.12
-/opt/homebrew/bin/python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-pip install -r requirements.txt
-cp -n .env.example .env
-./run.sh
-```
-
-The default transcription settings are now CPU + INT8:
-
-```dotenv
-WHISPER_DEVICE=cpu
-WHISPER_COMPUTE_TYPE=int8
-```
-
-This avoids the harmless but noisy warning about converting float16 model weights to float32 on a CPU backend.
+- The style prompt is now reference-driven instead of hardcoded to a generic comic look.
+- The app explicitly tells the image model to imitate the specific visual language of the style reference.
+- Balanced and strong modes no longer request high source-image fidelity, which gives the reference image more influence.
+- Each stylized panel now saves the exact prompt used in a sidecar `.prompt.txt` file for debugging.

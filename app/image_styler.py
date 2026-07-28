@@ -10,6 +10,9 @@ class ImageStylingError(RuntimeError):
     pass
 
 
+_ALLOWED_STYLE_STRENGTHS = {"subtle", "balanced", "strong"}
+
+
 def stylize_panel(
     frame_path: Path,
     style_reference_path: Path,
@@ -18,24 +21,13 @@ def stylize_panel(
     panel_kind: str,
     settings: Settings,
     prompt_suffix: str | None = None,
-) -> None:
-    prompt = f"""
-Transform the FIRST input image into a polished comic-book panel.
-Use the SECOND input image only as a visual style reference for line quality,
-color treatment, texture, shading, and overall illustration language.
-
-Preserve from the first image:
-- the same people and recognizable facial identity
-- pose, gesture, camera angle, framing, and spatial relationships
-- the original performance moment
-
-Panel narrative role: {panel_kind}.
-Make the image read clearly at comic-panel size. Do not add speech bubbles,
-captions, sound-effect lettering, logos, borders, or watermarks. Do not copy
-specific characters or content from the style reference.
-""".strip()
-    if prompt_suffix:
-        prompt = f"{prompt}\n\nAdditional direction: {prompt_suffix.strip()}"
+    style_strength: str = "balanced",
+) -> str:
+    prompt = build_stylization_prompt(
+        panel_kind=panel_kind,
+        style_strength=style_strength,
+        prompt_suffix=prompt_suffix,
+    )
 
     headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
     files = [
@@ -52,11 +44,14 @@ specific characters or content from the style reference.
     form = {
         "model": settings.openai_image_model,
         "prompt": prompt,
-        "input_fidelity": "high",
         "quality": settings.openai_image_quality,
         "size": "1024x1024",
         "output_format": "png",
     }
+
+    input_fidelity = _input_fidelity_for(style_strength)
+    if input_fidelity:
+        form["input_fidelity"] = input_fidelity
 
     with httpx.Client(timeout=300.0) as client:
         response = client.post(
@@ -78,6 +73,83 @@ specific characters or content from the style reference.
         raise ImageStylingError("OpenAI response did not contain image data") from exc
 
     output_path.write_bytes(base64.b64decode(encoded))
+    return prompt
+
+
+def build_stylization_prompt(
+    *,
+    panel_kind: str,
+    style_strength: str,
+    prompt_suffix: str | None = None,
+) -> str:
+    strength = _normalize_style_strength(style_strength)
+    strength_block = {
+        "subtle": (
+            "Keep the scene and facial proportions fairly close to Image A. "
+            "Apply the reference style with restraint: gently adapt the linework, palette, shading, "
+            "and texture while keeping the result grounded and faithful to the source frame."
+        ),
+        "balanced": (
+            "Match the style reference clearly rather than defaulting to a generic comic look. "
+            "Preserve the identity, pose, and composition from Image A, but allow noticeable stylization in "
+            "facial design, shapes, palette, line quality, and rendering technique so the result genuinely feels "
+            "drawn in the style of Image B."
+        ),
+        "strong": (
+            "Prioritize the visual language of Image B decisively over photo-real fidelity. "
+            "It is acceptable to simplify forms, stylize facial proportions, enlarge or redesign eyes if that matches "
+            "Image B, flatten or reshape shading, shift the palette, and introduce the texture and line treatment of "
+            "Image B, as long as the person remains recognizable and the performance moment still matches Image A."
+        ),
+    }[strength]
+
+    prompt = f"""
+Edit the provided images. Image A is the source performance frame. Image B is the style reference.
+
+Transform Image A into a finished illustrated panel that adopts the SPECIFIC visual language of Image B.
+Do not fall back to a generic comic-book or generic editorial illustration style.
+
+Preserve from Image A:
+- the same person and recognizable identity
+- the same core expression, emotion, and performance moment
+- pose, gesture, camera angle, and overall composition
+- the same scene and spatial relationships
+
+Study Image B and imitate as many of these qualities as possible:
+- line quality, contour weight, and edge treatment
+- shape simplification or exaggeration
+- facial-feature design, eye treatment, and character proportions
+- palette, color temperature, and contrast
+- shading approach (flat, cel-shaded, textured, crosshatched, painterly, etc.)
+- texture, grain, halftone, paper feel, or surface finish
+- overall mood and degree of stylization
+
+Panel narrative role: {panel_kind}.
+{strength_block}
+
+The result should read as an illustrated panel in the style of Image B, not as a lightly filtered photo.
+Do not add speech bubbles, captions, logos, watermarks, or panel borders.
+""".strip()
+
+    if prompt_suffix:
+        prompt = f"{prompt}\n\nAdditional direction: {prompt_suffix.strip()}"
+    return prompt
+
+
+def _normalize_style_strength(style_strength: str) -> str:
+    value = (style_strength or "balanced").strip().lower()
+    if value not in _ALLOWED_STYLE_STRENGTHS:
+        return "balanced"
+    return value
+
+
+def _input_fidelity_for(style_strength: str) -> str | None:
+    strength = _normalize_style_strength(style_strength)
+    if strength == "subtle":
+        return "high"
+    if strength == "balanced":
+        return None
+    return None
 
 
 def _mime_for(path: Path) -> str:

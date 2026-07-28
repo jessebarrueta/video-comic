@@ -13,7 +13,7 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   result.hidden = true;
   button.disabled = true;
-  status.textContent = "Transcribing, selecting frames, re-illustrating, and arranging tiny rectangles with excessive confidence…";
+  status.textContent = "Transcribing, selecting frames, re-illustrating, and arguing with aesthetic probability fields…";
 
   const body = new FormData(form);
 
@@ -29,7 +29,7 @@ form.addEventListener("submit", async (event) => {
 
     currentManifest = data;
     renderResult(data);
-    status.textContent = `Done. ${data.panels.length} panels across ${data.page_count} page${data.page_count === 1 ? "" : "s"}.`;
+    status.textContent = `Done. ${data.panels.length} panels across ${data.page_count} page${data.page_count === 1 ? "" : "s"}. Style strength: ${data.style_strength}.`;
     result.hidden = false;
     result.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
@@ -93,7 +93,20 @@ function renderPanelControls(data) {
 
     const prompt = document.createElement("textarea");
     prompt.rows = 2;
-    prompt.placeholder = "Optional art direction for this panel (e.g. more dramatic, cleaner face, stronger linework)";
+    prompt.placeholder = "Optional art direction for this panel (e.g. stronger grain, flatter shading, rougher linework)";
+
+    const strengthLabel = document.createElement("label");
+    strengthLabel.className = "mini stacked";
+    strengthLabel.textContent = "Style strength";
+
+    const strength = document.createElement("select");
+    strength.innerHTML = `
+      <option value="subtle">Subtle</option>
+      <option value="balanced">Balanced</option>
+      <option value="strong">Strong</option>
+    `;
+    strength.value = data.style_strength || "balanced";
+    strengthLabel.appendChild(strength);
 
     const meta = document.createElement("p");
     meta.className = "mini";
@@ -118,17 +131,19 @@ function renderPanelControls(data) {
       await regeneratePanel(data.job_id, panel.index, {
         bubble_text: bubble.value,
         prompt_suffix: prompt.value,
+        style_strength: strength.value,
       }, state, refresh, saveText);
     });
 
     saveText.addEventListener("click", async () => {
       await regeneratePanel(data.job_id, panel.index, {
         bubble_text: bubble.value,
+        style_strength: strength.value,
       }, state, refresh, saveText);
     });
 
     row.append(refresh, saveText, state);
-    card.append(title, thumb, meta, bubble, prompt, row);
+    card.append(title, thumb, meta, bubble, prompt, strengthLabel, row);
     panelControls.appendChild(card);
   });
 }
