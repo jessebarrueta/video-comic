@@ -215,21 +215,31 @@ def _draw_speech_bubble(
 ) -> None:
     panel_w = rect[2] - rect[0]
     panel_h = rect[3] - rect[1]
-    max_bubble_w = int(panel_w * 0.66)
-    font_size = max(19, min(38, int(panel_w / 19)))
     text = _timed_text(beat)
+    word_count = max(1, len(text.replace("\n", " ").split()))
+
+    # Long dialogue reads better in a wider, shallower balloon. The old layout
+    # made narrow balloons and compensated with height, which is how one ends up
+    # covering a character's entire forehead with typography.
+    width_fraction = 0.82 if word_count >= 14 else 0.74
+    max_bubble_w = int(panel_w * width_fraction)
+    font_size = max(18, min(36, int(panel_w / 20)))
 
     while True:
         font = _font(font_size)
-        lines = _wrap_text(text, font, max_bubble_w - 52)
-        line_height = int(font_size * 1.10)
-        required_h = len(lines) * line_height + 40
-        required_w = min(max_bubble_w, max(_measure(line, font) for line in lines) + 52) if lines else 0
+        lines = _wrap_text(text, font, max_bubble_w - 48)
+        line_height = int(font_size * 1.08)
+        required_h = len(lines) * line_height + 36
+        required_w = (
+            min(max_bubble_w, max(_measure(line, font) for line in lines) + 48)
+            if lines
+            else 0
+        )
         if (
             lines
-            and required_h <= int(panel_h * 0.44)
-            and required_w <= int(panel_w * 0.68)
-        ) or font_size <= 17:
+            and required_h <= int(panel_h * 0.36)
+            and required_w <= int(panel_w * 0.84)
+        ) or font_size <= 16:
             break
         font_size -= 2
 
@@ -237,62 +247,112 @@ def _draw_speech_bubble(
         return
 
     bubble_w = required_w
-    bubble_h = min(required_h, int(panel_h * 0.50))
-    anchor = _choose_bubble_anchor(panel_image, bubble_w, bubble_h, face_boxes)
-    left, top = _anchor_to_position(rect, bubble_w, bubble_h, anchor)
+    bubble_h = min(required_h, int(panel_h * 0.40))
+    speaker_point_local = _estimate_speaker_point_local(panel_image, face_boxes)
+    left_local, top_local, placement = _choose_bubble_position(
+        panel_image,
+        bubble_w,
+        bubble_h,
+        face_boxes,
+        speaker_point_local,
+    )
+
+    left = rect[0] + left_local
+    top = rect[1] + top_local
     bubble_rect = (left, top, left + bubble_w, top + bubble_h)
+    speaker_point = (rect[0] + speaker_point_local[0], rect[1] + speaker_point_local[1])
 
     overlay = Image.new("RGBA", page.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    draw.rounded_rectangle(bubble_rect, radius=34, fill=BUBBLE, outline=INK + (255,), width=6)
+    draw.rounded_rectangle(
+        bubble_rect,
+        radius=30,
+        fill=BUBBLE,
+        outline=INK + (255,),
+        width=6,
+    )
 
-    speaker_point = _estimate_speaker_point(rect, anchor, face_boxes)
-    tail = _tail_polygon(bubble_rect, anchor, speaker_point)
-    draw.polygon(tail, fill=BUBBLE, outline=INK + (255,))
+    tail = _tail_polygon_nearest(
+        bubble_rect,
+        speaker_point,
+        face_boxes=face_boxes,
+        panel_origin=(rect[0], rect[1]),
+    )
+    if tail:
+        draw.polygon(tail, fill=BUBBLE, outline=INK + (255,))
 
-    text_y = top + 20
+    text_y = top + 18
     for line in lines:
-        draw.text((left + 26, text_y), line, font=font, fill=INK + (255,))
+        draw.text((left + 24, text_y), line, font=font, fill=INK + (255,))
         text_y += line_height
 
     page.paste(overlay, (0, 0), overlay)
 
 
-def _choose_bubble_anchor(
+def _choose_bubble_position(
     panel_image: Image.Image,
     bubble_w: int,
     bubble_h: int,
-    face_boxes: list[FaceBox] | None = None,
-) -> str:
+    face_boxes: list[FaceBox] | None,
+    speaker_point: tuple[int, int],
+) -> tuple[int, int, str]:
     panel_w, panel_h = panel_image.size
-    normalized = panel_image.convert("L").filter(ImageFilter.FIND_EDGES)
     face_boxes = face_boxes or []
+    edges = panel_image.convert("L").filter(ImageFilter.FIND_EDGES)
+    pad = 16
+
+    x_left = pad
+    x_center = max(pad, (panel_w - bubble_w) // 2)
+    x_right = max(pad, panel_w - bubble_w - pad)
+    y_top = pad
+    y_upper = max(pad, int(panel_h * 0.16))
+    y_bottom = max(pad, panel_h - bubble_h - pad)
+
     candidates = {
-        "top-left": (16, 16),
-        "top-right": (panel_w - bubble_w - 16, 16),
-        "bottom-left": (16, panel_h - bubble_h - 16),
-        "bottom-right": (panel_w - bubble_w - 16, panel_h - bubble_h - 16),
+        "top-left": (x_left, y_top),
+        "top-center": (x_center, y_top),
+        "top-right": (x_right, y_top),
+        "upper-left": (x_left, y_upper),
+        "upper-right": (x_right, y_upper),
+        "bottom-left": (x_left, y_bottom),
+        "bottom-right": (x_right, y_bottom),
     }
 
-    scores: list[tuple[float, str]] = []
+    scored: list[tuple[float, int, int, str]] = []
     for name, (left, top) in candidates.items():
-        left = max(0, left)
-        top = max(0, top)
         right = min(panel_w, left + bubble_w)
         bottom = min(panel_h, top + bubble_h)
-        region = normalized.crop((left, top, right, bottom))
+        box = (left, top, right, bottom)
+        region = edges.crop(box)
         activity = ImageStat.Stat(region).mean[0]
-        face_overlap = sum(_overlap_area((left, top, right, bottom), face_rect(face)) for face in face_boxes)
-        face_penalty = face_overlap / max(1, bubble_w * bubble_h) * 200.0
-        penalty = 0.0
-        if name.startswith("bottom"):
-            penalty += 10.0
-        if name.endswith("right"):
-            penalty += 1.5
-        scores.append((activity + penalty + face_penalty, name))
 
-    scores.sort(key=lambda item: item[0])
-    return scores[0][1]
+        face_overlap = sum(_overlap_area(box, face_rect(face)) for face in face_boxes)
+        face_penalty = face_overlap / max(1, bubble_w * bubble_h) * 520.0
+
+        nearest = _nearest_point_on_rect(box, speaker_point)
+        distance = math.dist(nearest, speaker_point)
+        distance_penalty = distance / max(1.0, math.hypot(panel_w, panel_h)) * 38.0
+
+        placement_penalty = 0.0
+        if name.startswith("bottom"):
+            placement_penalty += 10.0
+        if name.startswith("upper"):
+            placement_penalty += 3.0
+        if name.endswith("right"):
+            placement_penalty += 1.0
+
+        scored.append(
+            (
+                activity + face_penalty + distance_penalty + placement_penalty,
+                left,
+                top,
+                name,
+            )
+        )
+
+    scored.sort(key=lambda item: item[0])
+    _, left, top, name = scored[0]
+    return left, top, name
 
 
 def face_rect(face: FaceBox) -> tuple[int, int, int, int]:
@@ -309,64 +369,103 @@ def _overlap_area(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) ->
     return (right - left) * (bottom - top)
 
 
-def _anchor_to_position(
-    rect: tuple[int, int, int, int],
-    bubble_w: int,
-    bubble_h: int,
-    anchor: str,
-) -> tuple[int, int]:
-    x_pad = 24
-    y_pad = 22
-    if anchor == "top-left":
-        return rect[0] + x_pad, rect[1] + y_pad
-    if anchor == "top-right":
-        return rect[2] - bubble_w - x_pad, rect[1] + y_pad
-    if anchor == "bottom-left":
-        return rect[0] + x_pad, rect[3] - bubble_h - y_pad
-    return rect[2] - bubble_w - x_pad, rect[3] - bubble_h - y_pad
-
-
-def _estimate_speaker_point(
-    rect: tuple[int, int, int, int],
-    anchor: str,
+def _estimate_speaker_point_local(
+    panel_image: Image.Image,
     face_boxes: list[FaceBox],
 ) -> tuple[int, int]:
-    panel_w = rect[2] - rect[0]
-    panel_h = rect[3] - rect[1]
+    panel_w, panel_h = panel_image.size
     if face_boxes:
         face = face_boxes[0]
-        return rect[0] + face.x + face.w // 2, rect[1] + min(panel_h - 12, face.y + face.h)
+        # Aim near the lower-middle face boundary, not through the center of the
+        # face. It reads as a speaker pointer without becoming facial fencing.
+        return (
+            max(8, min(panel_w - 8, face.x + face.w // 2)),
+            max(8, min(panel_h - 8, face.y + int(face.h * 0.82))),
+        )
 
-    if anchor == "top-left":
-        return rect[0] + int(panel_w * 0.62), rect[1] + int(panel_h * 0.58)
-    if anchor == "top-right":
-        return rect[0] + int(panel_w * 0.38), rect[1] + int(panel_h * 0.58)
-    if anchor == "bottom-left":
-        return rect[0] + int(panel_w * 0.60), rect[1] + int(panel_h * 0.42)
-    return rect[0] + int(panel_w * 0.40), rect[1] + int(panel_h * 0.42)
+    centroid_x, centroid_y = _activity_centroid(
+        panel_image.convert("L").resize((320, 320), Image.Resampling.BILINEAR).filter(ImageFilter.FIND_EDGES)
+    )
+    return (
+        int(panel_w * centroid_x),
+        int(panel_h * min(0.78, centroid_y + 0.12)),
+    )
 
 
-def _tail_polygon(
+def _nearest_point_on_rect(
+    rect: tuple[int, int, int, int],
+    point: tuple[int, int],
+) -> tuple[int, int]:
+    left, top, right, bottom = rect
+    px, py = point
+    clamped_x = max(left, min(right, px))
+    clamped_y = max(top, min(bottom, py))
+
+    # If the point projects inside the rectangle, force the nearest boundary.
+    if left < px < right and top < py < bottom:
+        distances = {
+            "left": px - left,
+            "right": right - px,
+            "top": py - top,
+            "bottom": bottom - py,
+        }
+        edge = min(distances, key=distances.get)
+        if edge == "left":
+            return left, py
+        if edge == "right":
+            return right, py
+        if edge == "top":
+            return px, top
+        return px, bottom
+
+    return int(clamped_x), int(clamped_y)
+
+
+def _tail_polygon_nearest(
     bubble_rect: tuple[int, int, int, int],
-    anchor: str,
     speaker_point: tuple[int, int],
+    *,
+    face_boxes: list[FaceBox],
+    panel_origin: tuple[int, int],
 ) -> list[tuple[int, int]]:
-    left, top, right, bottom = bubble_rect
-    if anchor == "top-left":
-        base_x = left + int((right - left) * 0.76)
-        base_y = bottom
-        return [(base_x - 18, base_y - 6), (base_x + 20, base_y - 6), speaker_point]
-    if anchor == "top-right":
-        base_x = left + int((right - left) * 0.24)
-        base_y = bottom
-        return [(base_x - 20, base_y - 6), (base_x + 18, base_y - 6), speaker_point]
-    if anchor == "bottom-left":
-        base_x = left + int((right - left) * 0.72)
-        base_y = top
-        return [(base_x - 18, base_y + 6), (base_x + 20, base_y + 6), speaker_point]
-    base_x = left + int((right - left) * 0.28)
-    base_y = top
-    return [(base_x - 20, base_y + 6), (base_x + 18, base_y + 6), speaker_point]
+    bubble_center = (
+        (bubble_rect[0] + bubble_rect[2]) // 2,
+        (bubble_rect[1] + bubble_rect[3]) // 2,
+    )
+
+    target = speaker_point
+    if face_boxes:
+        face = face_boxes[0]
+        face_global = (
+            panel_origin[0] + face.x,
+            panel_origin[1] + face.y,
+            panel_origin[0] + face.x + face.w,
+            panel_origin[1] + face.y + face.h,
+        )
+        # Point to the nearest edge of the face rather than slicing across it.
+        target = _nearest_point_on_rect(face_global, bubble_center)
+
+    base = _nearest_point_on_rect(bubble_rect, target)
+    dx = target[0] - base[0]
+    dy = target[1] - base[1]
+    distance = math.hypot(dx, dy)
+    if distance < 8:
+        return []
+
+    # A narrow base keeps even a moderately long tail from becoming a giant
+    # white spear. Width scales gently and remains capped.
+    half_width = max(6.0, min(13.0, distance * 0.035))
+    perp_x = -dy / distance
+    perp_y = dx / distance
+    base_a = (
+        int(base[0] + perp_x * half_width),
+        int(base[1] + perp_y * half_width),
+    )
+    base_b = (
+        int(base[0] - perp_x * half_width),
+        int(base[1] - perp_y * half_width),
+    )
+    return [base_a, base_b, (int(target[0]), int(target[1]))]
 
 
 def _timed_text(beat: Beat) -> str:

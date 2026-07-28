@@ -16,10 +16,13 @@ dependencies = [
   "Pillow>=10.4",
   "faster-whisper>=1.1",
   "pydantic-settings>=2.4",
-  "opencv-python-headless>=4.10",
+  "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
+face = [
+  "opencv-python-headless>=4.10,<5",
+]
 dev = [
   "pytest>=8.3",
 ]

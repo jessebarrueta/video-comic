@@ -1,0 +1,2 @@
+# Optional enhancement. Install only ONE OpenCV wheel package in an environment.
+opencv-python-headless>=4.10,<5

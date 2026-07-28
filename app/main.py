@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.devtools_workspace import ensure_devtools_workspace_file
 from app.models import RegeneratePanelRequest
 from app.pipeline import PipelineError, generate_comic, load_manifest, regenerate_panel
+from app.vision import face_detection_status
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
@@ -52,6 +53,7 @@ def health() -> dict[str, object]:
         "max_video_seconds": settings.max_video_seconds,
         "max_panels_per_page": settings.max_panels_per_page,
         "max_total_panels": settings.max_total_panels,
+        "face_detection": face_detection_status(),
     }
 
 

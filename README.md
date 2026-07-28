@@ -162,3 +162,31 @@ pytest
 - The app explicitly tells the image model to imitate the specific visual language of the style reference.
 - Balanced and strong modes no longer request high source-image fidelity, which gives the reference image more influence.
 - Each stylized panel now saves the exact prompt used in a sidecar `.prompt.txt` file for debugging.
+
+## Optional face detection
+
+Face detection improves crop and speech-bubble placement, but it is no longer required for comic generation. The app will fall back to visual-activity scoring if OpenCV is absent or incomplete.
+
+Install the optional detector with:
+
+```bash
+pip install -r requirements-face-detection.txt
+```
+
+Only one OpenCV wheel package should exist in a virtual environment because all OpenCV wheel variants share the same `cv2` import namespace. If `/api/health` reports an incomplete `cv2` module, clean the environment and reinstall only the headless package:
+
+```bash
+pip uninstall -y cv2 opencv-python opencv-contrib-python \
+  opencv-python-headless opencv-contrib-python-headless
+pip install -r requirements-face-detection.txt
+```
+
+The app remains usable without that optional reinstall; `face_detection.available` will simply be `false` in `/api/health`.
+
+## Speech bubble placement changes in v2.5
+
+- Long lines use wider, shallower balloons so they cover less of the speaker.
+- Placement now considers visual activity, detected-face overlap, and tail distance together.
+- Candidate positions include top-center and upper-side placements rather than only four corners.
+- Tails attach to the nearest balloon edge and point toward the nearest face boundary.
+- Tail width is capped, preventing the large triangular "speech spear" effect seen in earlier builds.

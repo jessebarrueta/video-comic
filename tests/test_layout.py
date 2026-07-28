@@ -2,8 +2,12 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from app.layout import _choose_bubble_anchor, compose_comic
-from app.models import Beat, WordTiming
+from app.layout import (
+    _choose_bubble_position,
+    _tail_polygon_nearest,
+    compose_comic,
+)
+from app.models import Beat, FaceBox, WordTiming
 
 
 def test_compose_comic(tmp_path: Path) -> None:
@@ -37,12 +41,37 @@ def test_compose_comic(tmp_path: Path) -> None:
         assert result.size == (1536, 2048)
 
 
-def test_choose_bubble_anchor_prefers_empty_corner() -> None:
+def test_choose_bubble_position_prefers_quiet_side() -> None:
     image = Image.new("RGB", (600, 400), (240, 240, 240))
     draw = ImageDraw.Draw(image)
-    # Make the left side busy with visible edges so the bubble logic should prefer top-right.
     for step in range(0, 280, 18):
         draw.line((step, 0, step, 240), fill=(30, 30, 30), width=4)
         draw.line((0, step, 280, step), fill=(30, 30, 30), width=4)
-    anchor = _choose_bubble_anchor(image, 220, 110)
-    assert anchor == "top-right"
+
+    left, top, name = _choose_bubble_position(
+        image,
+        220,
+        110,
+        [],
+        speaker_point=(430, 230),
+    )
+    assert name in {"top-right", "upper-right", "bottom-right"}
+    assert left > 250
+    assert top >= 0
+
+
+def test_tail_is_narrow_and_points_to_face_edge() -> None:
+    bubble = (20, 20, 260, 110)
+    face = FaceBox(x=320, y=120, w=120, h=160)
+    tail = _tail_polygon_nearest(
+        bubble,
+        (380, 250),
+        face_boxes=[face],
+        panel_origin=(0, 0),
+    )
+
+    assert len(tail) == 3
+    base_width = ((tail[0][0] - tail[1][0]) ** 2 + (tail[0][1] - tail[1][1]) ** 2) ** 0.5
+    assert base_width <= 28
+    # The point should land on the face boundary rather than crossing to its center.
+    assert tail[2][0] in {face.x, face.x + face.w} or tail[2][1] in {face.y, face.y + face.h}
