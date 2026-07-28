@@ -17,11 +17,12 @@ class Settings(BaseSettings):
     openrouter_app_name: str = "Video Comic MVP"
 
     whisper_model: str = "small"
-    whisper_device: str = "auto"
-    whisper_compute_type: str = "default"
+    whisper_device: str = "cpu"
+    whisper_compute_type: str = "int8"
 
-    max_video_seconds: int = 120
-    max_panels: int = 6
+    max_video_seconds: int = 300
+    max_panels_per_page: int = 6
+    max_total_panels: int = 18
     skip_stylization: bool = False
     work_dir: Path = Path("./var/jobs")
 

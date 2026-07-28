@@ -1,19 +1,25 @@
+import logging
 import shutil
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
-from app.pipeline import PipelineError, generate_comic
+from app.devtools_workspace import ensure_devtools_workspace_file
+from app.models import RegeneratePanelRequest
+from app.pipeline import PipelineError, generate_comic, load_manifest, regenerate_panel
 
 BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent
 STATIC_DIR = BASE_DIR / "static"
 settings = get_settings()
+logger = logging.getLogger(__name__)
+DEVTOOLS_WORKSPACE_FILE = ensure_devtools_workspace_file(PROJECT_ROOT)
 
-app = FastAPI(title="Video Comic MVP", version="0.1.0")
+app = FastAPI(title="Video Comic MVP", version="0.2.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/jobs", StaticFiles(directory=settings.work_dir), name="jobs")
 
@@ -23,6 +29,21 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get(
+    "/.well-known/appspecific/com.chrome.devtools.json",
+    include_in_schema=False,
+)
+def chrome_devtools_workspace(request: Request) -> FileResponse:
+    # This descriptor reveals a local absolute path and is only useful when the
+    # app itself is being debugged on the local machine.
+    hostname = (request.url.hostname or "").lower()
+    if hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    refreshed_path = ensure_devtools_workspace_file(PROJECT_ROOT)
+    return FileResponse(refreshed_path, media_type="application/json")
+
+
 @app.get("/api/health")
 def health() -> dict[str, object]:
     return {
@@ -30,6 +51,9 @@ def health() -> dict[str, object]:
         "openrouter_enabled": bool(settings.openrouter_api_key),
         "stylization_enabled": not settings.skip_stylization,
         "openai_key_configured": bool(settings.openai_api_key),
+        "max_video_seconds": settings.max_video_seconds,
+        "max_panels_per_page": settings.max_panels_per_page,
+        "max_total_panels": settings.max_total_panels,
     }
 
 
@@ -55,8 +79,30 @@ def generate(
         except PipelineError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
+            logger.exception("Comic generation failed")
             raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
 
+    return manifest.model_dump()
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str) -> dict[str, object]:
+    try:
+        manifest, _ = load_manifest(job_id, settings)
+    except PipelineError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return manifest.model_dump()
+
+
+@app.post("/api/jobs/{job_id}/panels/{panel_index}/regenerate")
+def regenerate_job_panel(job_id: str, panel_index: int, request: RegeneratePanelRequest) -> dict[str, object]:
+    try:
+        manifest = regenerate_panel(job_id, panel_index, request, settings)
+    except PipelineError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Panel regeneration failed")
+        raise HTTPException(status_code=500, detail=f"Regeneration failed: {exc}") from exc
     return manifest.model_dump()
 
 

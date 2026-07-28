@@ -12,15 +12,15 @@
         <p class="eyebrow">Performance-aware comicifier</p>
         <h1>Turn a clip into a comic page.</h1>
         <p class="lede">
-          Upload a short spoken performance and one visual style reference.
-          Timing chooses the moments; AI redraws the panels; local code handles the lettering.
+          Upload a spoken performance and one visual style reference. Timing chooses the moments,
+          AI redraws the panels, local code handles the lettering, and now longer clips can spill into multiple pages.
         </p>
       </header>
 
       <form id="generator" class="card">
         <label class="drop">
           <span>Video clip</span>
-          <small>MP4, MOV, M4V, or WebM — 2 minutes or less</small>
+          <small>MP4, MOV, M4V, or WebM — up to 5 minutes</small>
           <input id="video" name="video" type="file" accept="video/*" required />
         </label>
 
@@ -39,7 +39,15 @@
           <h2>Your comic</h2>
           <a id="download" download="comic.png">Save PNG</a>
         </div>
-        <img id="comic" alt="Generated comic page" />
+
+        <div id="pages" class="pages"></div>
+
+        <details open>
+          <summary>Panel controls</summary>
+          <p class="controls-note">Regenerate individual panels, optionally refine the art direction, or just edit the balloon text and recompose the page.</p>
+          <div id="panel-controls" class="panel-grid"></div>
+        </details>
+
         <details>
           <summary>Transcript and panel plan</summary>
           <pre id="manifest"></pre>

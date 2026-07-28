@@ -11,10 +11,10 @@ from app.frame_selection import choose_best_frame
 from app.image_styler import stylize_panel
 from app.layout import compose_comic
 from app.media import assert_ffmpeg_available, extract_audio, probe_duration
-from app.models import Beat, JobManifest
+from app.models import GeneratedPanel, JobManifest, RegeneratePanelRequest
 from app.openrouter_client import plan_panels
 from app.transcribe import transcribe_words
-from app.vision import choose_best_candidate
+from app.vision import detect_faces_path
 
 
 class PipelineError(RuntimeError):
@@ -40,11 +40,13 @@ def generate_comic(
     job_id = uuid.uuid4().hex[:12]
     job_dir = settings.work_dir / job_id
     frames_dir = job_dir / "frames"
-    candidates_dir = job_dir / "frame-candidates"
+    candidate_frames_dir = job_dir / "frame-candidates"
     panels_dir = job_dir / "panels"
+    pages_dir = job_dir / "pages"
     frames_dir.mkdir(parents=True)
-    candidates_dir.mkdir(parents=True)
+    candidate_frames_dir.mkdir(parents=True)
     panels_dir.mkdir(parents=True)
+    pages_dir.mkdir(parents=True)
 
     video_copy = job_dir / f"input{video_path.suffix.lower()}"
     style_copy = job_dir / f"style{style_reference_path.suffix.lower()}"
@@ -58,121 +60,181 @@ def generate_comic(
     if not beats:
         raise PipelineError("No usable spoken beats were found")
 
+    panel_budget = _desired_panel_count(duration, len(beats), settings)
     used_openrouter = False
     decisions = []
     if settings.openrouter_api_key:
         try:
-            decisions = plan_panels(beats, settings.max_panels, settings)
+            decisions = plan_panels(beats, panel_budget, settings)
             used_openrouter = bool(decisions)
         except Exception as exc:  # Fall back while preserving debug evidence.
             (job_dir / "openrouter-error.txt").write_text(str(exc), encoding="utf-8")
 
     if not decisions:
-        decisions = heuristic_plan(beats, settings.max_panels)
+        decisions = heuristic_plan(beats, panel_budget)
 
     selected_beats = apply_plan(beats, decisions)
     if not selected_beats:
         raise PipelineError("Panel planning produced no usable panels")
 
-    selection_debug: dict[str, object] = {"panels": []}
-    output_panels: list[Path] = []
+    panels: list[GeneratedPanel] = []
     for position, beat in enumerate(selected_beats):
         source_frame = frames_dir / f"{position:02d}.jpg"
         styled_frame = panels_dir / f"{position:02d}.png"
-
-        chosen_frame, selection_info = _select_source_frame(
+        choose_best_frame(
             video_copy,
             beat,
-            duration,
-            candidates_dir / f"panel-{position:02d}",
-            source_frame,
-        )
-        selection_debug["panels"].append(
-            {
-                "panel_index": position,
-                "beat_index": beat.index,
-                "beat_text": beat.text,
-                **selection_info,
-                "final_source_frame": chosen_frame.name,
-            }
+            duration=duration,
+            output_path=source_frame,
+            scratch_dir=candidate_frames_dir / f"beat-{position:02d}",
         )
 
         if settings.skip_stylization:
-            Image.open(chosen_frame).convert("RGB").save(styled_frame, "PNG")
+            Image.open(source_frame).convert("RGB").save(styled_frame, "PNG")
         else:
             if not settings.openai_api_key:
                 raise PipelineError(
                     "OPENAI_API_KEY is required unless SKIP_STYLIZATION=true"
                 )
             stylize_panel(
-                chosen_frame,
+                source_frame,
                 style_copy,
                 styled_frame,
                 panel_kind=beat.kind,
                 settings=settings,
             )
-        output_panels.append(styled_frame)
 
-    comic_path = job_dir / "comic.png"
-    compose_comic(output_panels, selected_beats, comic_path)
+        panels.append(
+            GeneratedPanel(
+                index=position,
+                page_index=position // settings.max_panels_per_page,
+                source_frame=_job_url(job_id, source_frame.relative_to(job_dir)),
+                styled_frame=_job_url(job_id, styled_frame.relative_to(job_dir)),
+                beat=beat,
+                face_boxes=detect_faces_path(source_frame),
+            )
+        )
 
     manifest = JobManifest(
         job_id=job_id,
         transcript=transcript,
-        beats=selected_beats,
-        comic_path=f"/jobs/{job_id}/comic.png",
+        beats=[panel.beat for panel in panels],
+        comic_path="",
+        comic_paths=[],
+        page_count=0,
+        panels=panels,
         used_openrouter=used_openrouter,
         used_stylization=not settings.skip_stylization,
     )
-    (job_dir / "manifest.json").write_text(
-        manifest.model_dump_json(indent=2), encoding="utf-8"
-    )
-    (job_dir / "transcript.json").write_text(
-        json.dumps([word.model_dump() for word in words], indent=2), encoding="utf-8"
-    )
-    (job_dir / "frame-selection.json").write_text(
-        json.dumps(selection_debug, indent=2), encoding="utf-8"
-    )
+
+    _compose_pages(manifest, job_dir, settings)
+    _save_manifest(job_dir, manifest, words)
     return manifest
 
 
-def _candidate_times(beat: Beat, clip_duration: float) -> list[float]:
-    duration = max(0.15, beat.end - beat.start)
-    anchors = [0.15, 0.35, 0.55, 0.78, 0.92]
-    times = []
-    for anchor in anchors:
-        timestamp = beat.start + duration * anchor
-        times.append(min(max(0.0, timestamp), max(0.0, clip_duration - 0.05)))
-    # Preserve the originally computed frame time as an explicit candidate.
-    times.append(min(max(0.0, beat.frame_time), max(0.0, clip_duration - 0.05)))
-    # Dedupe while preserving order.
-    unique: list[float] = []
-    seen = set()
-    for timestamp in times:
-        rounded = round(timestamp, 3)
-        if rounded not in seen:
-            unique.append(timestamp)
-            seen.add(rounded)
-    return unique
+def regenerate_panel(
+    job_id: str,
+    panel_index: int,
+    request: RegeneratePanelRequest,
+    settings: Settings,
+) -> JobManifest:
+    manifest, job_dir = load_manifest(job_id, settings)
+    panel = next((item for item in manifest.panels if item.index == panel_index), None)
+    if panel is None:
+        raise PipelineError(f"Panel {panel_index} was not found")
+
+    source_path = _job_fs_path(job_dir, panel.source_frame)
+    styled_path = _job_fs_path(job_dir, panel.styled_frame)
+    style_path = _find_style_reference(job_dir)
+
+    if request.bubble_text:
+        panel.beat.bubble_text = request.bubble_text.strip()
+
+    if settings.skip_stylization:
+        Image.open(source_path).convert("RGB").save(styled_path, "PNG")
+    else:
+        if not settings.openai_api_key:
+            raise PipelineError("OPENAI_API_KEY is required to regenerate stylized panels")
+        stylize_panel(
+            source_path,
+            style_path,
+            styled_path,
+            panel_kind=panel.beat.kind,
+            settings=settings,
+            prompt_suffix=request.prompt_suffix,
+        )
+
+    panel.face_boxes = detect_faces_path(source_path)
+    manifest.beats = [item.beat for item in manifest.panels]
+    _compose_pages(manifest, job_dir, settings)
+    _save_manifest(job_dir, manifest)
+    return manifest
 
 
-def _select_source_frame(
-    video_path: Path,
-    beat: Beat,
-    clip_duration: float,
-    candidate_dir: Path,
-    destination: Path,
-) -> tuple[Path, dict[str, object]]:
-    candidate_dir.mkdir(parents=True, exist_ok=True)
-    candidates: list[tuple[Path, float]] = []
-    for index, timestamp in enumerate(_candidate_times(beat, clip_duration)):
-        candidate_path = candidate_dir / f"candidate-{index:02d}.jpg"
-        extract_frame(video_path, timestamp, candidate_path)
-        candidates.append((candidate_path, timestamp))
+def load_manifest(job_id: str, settings: Settings) -> tuple[JobManifest, Path]:
+    job_dir = settings.work_dir / job_id
+    manifest_path = job_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise PipelineError("Job manifest not found")
+    return JobManifest.model_validate_json(manifest_path.read_text(encoding="utf-8")), job_dir
 
-    best_path, debug = choose_best_candidate(candidates)
-    shutil.copy2(best_path, destination)
-    return destination, debug
+
+def _compose_pages(manifest: JobManifest, job_dir: Path, settings: Settings) -> None:
+    pages_dir = job_dir / "pages"
+    pages_dir.mkdir(exist_ok=True)
+    comic_paths: list[str] = []
+
+    total_pages = max(1, (len(manifest.panels) + settings.max_panels_per_page - 1) // settings.max_panels_per_page)
+    for page_index in range(total_pages):
+        chunk = [panel for panel in manifest.panels if panel.page_index == page_index]
+        if not chunk:
+            continue
+        chunk = sorted(chunk, key=lambda item: item.index)
+        panel_paths = [_job_fs_path(job_dir, panel.styled_frame) for panel in chunk]
+        page_path = pages_dir / f"page-{page_index + 1:02d}.png"
+        compose_comic(panel_paths, [panel.beat for panel in chunk], page_path)
+        comic_paths.append(_job_url(manifest.job_id, page_path.relative_to(job_dir)))
+
+    manifest.comic_paths = comic_paths
+    manifest.page_count = len(comic_paths)
+    manifest.comic_path = comic_paths[0] if comic_paths else ""
+
+
+def _save_manifest(job_dir: Path, manifest: JobManifest, words: list | None = None) -> None:
+    (job_dir / "manifest.json").write_text(
+        manifest.model_dump_json(indent=2), encoding="utf-8"
+    )
+    if words is not None:
+        (job_dir / "transcript.json").write_text(
+            json.dumps([word.model_dump() for word in words], indent=2), encoding="utf-8"
+        )
+
+
+def _desired_panel_count(duration: float, beat_count: int, settings: Settings) -> int:
+    desired = max(4, round(duration / 10))
+    desired = min(desired, settings.max_total_panels, beat_count)
+    if duration > 90:
+        desired = min(max(desired, 8), settings.max_total_panels, beat_count)
+    return max(1, desired)
+
+
+def _job_url(job_id: str, relative_path: Path) -> str:
+    return f"/jobs/{job_id}/{relative_path.as_posix()}"
+
+
+def _job_fs_path(job_dir: Path, url_path: str) -> Path:
+    marker = f"/jobs/{job_dir.name}/"
+    if marker in url_path:
+        relative = url_path.split(marker, 1)[1]
+        return job_dir / relative
+    return job_dir / Path(url_path).name
+
+
+def _find_style_reference(job_dir: Path) -> Path:
+    matches = [*job_dir.glob("style.*")]
+    if not matches:
+        raise PipelineError("Style reference image not found in job directory")
+    return matches[0]
 
 
 def _validate_style_reference(path: Path) -> None:

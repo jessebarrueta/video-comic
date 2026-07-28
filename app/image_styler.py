@@ -17,6 +17,7 @@ def stylize_panel(
     *,
     panel_kind: str,
     settings: Settings,
+    prompt_suffix: str | None = None,
 ) -> None:
     prompt = f"""
 Transform the FIRST input image into a polished comic-book panel.
@@ -33,6 +34,8 @@ Make the image read clearly at comic-panel size. Do not add speech bubbles,
 captions, sound-effect lettering, logos, borders, or watermarks. Do not copy
 specific characters or content from the style reference.
 """.strip()
+    if prompt_suffix:
+        prompt = f"{prompt}\n\nAdditional direction: {prompt_suffix.strip()}"
 
     headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
     files = [

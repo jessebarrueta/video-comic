@@ -1,10 +1,10 @@
 import math
-import re
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageStat
 
-from app.models import Beat
+from app.models import Beat, FaceBox
+from app.vision import detect_faces_image
 
 PAGE_W = 1536
 PAGE_H = 2048
@@ -28,10 +28,15 @@ def compose_comic(
 
     for panel_path, beat, rect in zip(panel_paths, beats, rects, strict=True):
         original = Image.open(panel_path).convert("RGB")
-        panel = _fit_panel_smart(original, (rect[2] - rect[0], rect[3] - rect[1]))
+        faces = detect_faces_image(original)
+        panel, transformed_faces = _fit_panel_smart(
+            original,
+            (rect[2] - rect[0], rect[3] - rect[1]),
+            faces,
+        )
         page.paste(panel, rect[:2])
         _draw_panel_border(page, rect)
-        _draw_speech_bubble(page, rect, beat, panel)
+        _draw_speech_bubble(page, rect, beat, panel, transformed_faces)
 
     page.save(output_path, "PNG", optimize=True)
 
@@ -95,28 +100,43 @@ def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-def _fit_panel_smart(image: Image.Image, size: tuple[int, int]) -> Image.Image:
+def _fit_panel_smart(
+    image: Image.Image,
+    size: tuple[int, int],
+    faces: list[FaceBox],
+) -> tuple[Image.Image, list[FaceBox]]:
     target_w, target_h = size
     src_w, src_h = image.size
     target_ratio = target_w / target_h
     src_ratio = src_w / src_h
 
-    if abs(src_ratio - target_ratio) < 0.01:
-        return image.resize(size, Image.Resampling.LANCZOS)
+    crop = (0, 0, src_w, src_h)
+    if abs(src_ratio - target_ratio) >= 0.01:
+        crop = _suggest_crop_box(image, target_ratio, faces)
 
-    crop = _suggest_crop_box(image, target_ratio)
     cropped = image.crop(crop)
-    return cropped.resize(size, Image.Resampling.LANCZOS)
+    resized = cropped.resize(size, Image.Resampling.LANCZOS)
+    transformed_faces = _transform_faces(faces, crop, size)
+    return resized, transformed_faces
 
 
-def _suggest_crop_box(image: Image.Image, target_ratio: float) -> tuple[int, int, int, int]:
+def _suggest_crop_box(
+    image: Image.Image,
+    target_ratio: float,
+    faces: list[FaceBox],
+) -> tuple[int, int, int, int]:
     src_w, src_h = image.size
     gray = image.convert("L").resize((320, 320), Image.Resampling.BILINEAR)
     edges = gray.filter(ImageFilter.FIND_EDGES)
     centroid_x, centroid_y = _activity_centroid(edges)
-
-    # Bias slightly upward to preserve faces and de-emphasize lower-corner watermarks.
     centroid_y = centroid_y * 0.82 + 0.10
+
+    if faces:
+        main_face = faces[0]
+        face_cx = (main_face.x + main_face.w / 2) / src_w
+        face_cy = (main_face.y + main_face.h / 2) / src_h
+        centroid_x = (centroid_x * 0.35) + (face_cx * 0.65)
+        centroid_y = (centroid_y * 0.2) + (face_cy * 0.8)
 
     if (src_w / src_h) > target_ratio:
         crop_h = src_h
@@ -129,7 +149,46 @@ def _suggest_crop_box(image: Image.Image, target_ratio: float) -> tuple[int, int
     center_y = int(src_h * centroid_y)
     left = max(0, min(src_w - crop_w, center_x - crop_w // 2))
     top = max(0, min(src_h - crop_h, center_y - crop_h // 2))
+
+    if faces:
+        face = faces[0]
+        desired_margin = int(face.w * 0.35)
+        left = min(left, max(0, face.x - desired_margin))
+        left = max(0, min(src_w - crop_w, left))
+        top = min(top, max(0, face.y - int(face.h * 0.9)))
+        top = max(0, min(src_h - crop_h, top))
+
     return (left, top, left + crop_w, top + crop_h)
+
+
+def _transform_faces(
+    faces: list[FaceBox],
+    crop: tuple[int, int, int, int],
+    size: tuple[int, int],
+) -> list[FaceBox]:
+    left, top, right, bottom = crop
+    crop_w = right - left
+    crop_h = bottom - top
+    sx = size[0] / crop_w
+    sy = size[1] / crop_h
+    transformed: list[FaceBox] = []
+    for face in faces:
+        nx = max(0, face.x - left)
+        ny = max(0, face.y - top)
+        rx = min(crop_w, nx + face.w)
+        ry = min(crop_h, ny + face.h)
+        if rx <= nx or ry <= ny:
+            continue
+        transformed.append(
+            FaceBox(
+                x=int(nx * sx),
+                y=int(ny * sy),
+                w=int((rx - nx) * sx),
+                h=int((ry - ny) * sy),
+            )
+        )
+    transformed.sort(key=lambda box: box.w * box.h, reverse=True)
+    return transformed
 
 
 def _activity_centroid(edges: Image.Image) -> tuple[float, float]:
@@ -152,23 +211,24 @@ def _draw_speech_bubble(
     rect: tuple[int, int, int, int],
     beat: Beat,
     panel_image: Image.Image,
+    face_boxes: list[FaceBox],
 ) -> None:
     panel_w = rect[2] - rect[0]
     panel_h = rect[3] - rect[1]
-    max_bubble_w = int(panel_w * 0.70)
-    font_size = max(20, min(40, int(panel_w / 18)))
+    max_bubble_w = int(panel_w * 0.66)
+    font_size = max(19, min(38, int(panel_w / 19)))
     text = _timed_text(beat)
 
     while True:
         font = _font(font_size)
-        lines = _wrap_text(text, font, max_bubble_w - 56)
-        line_height = int(font_size * 1.12)
-        required_h = len(lines) * line_height + 44
-        required_w = min(max_bubble_w, max(_measure(line, font) for line in lines) + 56) if lines else 0
+        lines = _wrap_text(text, font, max_bubble_w - 52)
+        line_height = int(font_size * 1.10)
+        required_h = len(lines) * line_height + 40
+        required_w = min(max_bubble_w, max(_measure(line, font) for line in lines) + 52) if lines else 0
         if (
             lines
-            and required_h <= int(panel_h * 0.48)
-            and required_w <= int(panel_w * 0.72)
+            and required_h <= int(panel_h * 0.44)
+            and required_w <= int(panel_w * 0.68)
         ) or font_size <= 17:
             break
         font_size -= 2
@@ -177,8 +237,8 @@ def _draw_speech_bubble(
         return
 
     bubble_w = required_w
-    bubble_h = min(required_h, int(panel_h * 0.52))
-    anchor = _choose_bubble_anchor(panel_image, bubble_w, bubble_h)
+    bubble_h = min(required_h, int(panel_h * 0.50))
+    anchor = _choose_bubble_anchor(panel_image, bubble_w, bubble_h, face_boxes)
     left, top = _anchor_to_position(rect, bubble_w, bubble_h, anchor)
     bubble_rect = (left, top, left + bubble_w, top + bubble_h)
 
@@ -186,21 +246,27 @@ def _draw_speech_bubble(
     draw = ImageDraw.Draw(overlay)
     draw.rounded_rectangle(bubble_rect, radius=34, fill=BUBBLE, outline=INK + (255,), width=6)
 
-    speaker_point = _estimate_speaker_point(rect, anchor)
+    speaker_point = _estimate_speaker_point(rect, anchor, face_boxes)
     tail = _tail_polygon(bubble_rect, anchor, speaker_point)
     draw.polygon(tail, fill=BUBBLE, outline=INK + (255,))
 
-    text_y = top + 22
+    text_y = top + 20
     for line in lines:
-        draw.text((left + 28, text_y), line, font=font, fill=INK + (255,))
+        draw.text((left + 26, text_y), line, font=font, fill=INK + (255,))
         text_y += line_height
 
     page.paste(overlay, (0, 0), overlay)
 
 
-def _choose_bubble_anchor(panel_image: Image.Image, bubble_w: int, bubble_h: int) -> str:
+def _choose_bubble_anchor(
+    panel_image: Image.Image,
+    bubble_w: int,
+    bubble_h: int,
+    face_boxes: list[FaceBox] | None = None,
+) -> str:
     panel_w, panel_h = panel_image.size
     normalized = panel_image.convert("L").filter(ImageFilter.FIND_EDGES)
+    face_boxes = face_boxes or []
     candidates = {
         "top-left": (16, 16),
         "top-right": (panel_w - bubble_w - 16, 16),
@@ -216,15 +282,31 @@ def _choose_bubble_anchor(panel_image: Image.Image, bubble_w: int, bubble_h: int
         bottom = min(panel_h, top + bubble_h)
         region = normalized.crop((left, top, right, bottom))
         activity = ImageStat.Stat(region).mean[0]
+        face_overlap = sum(_overlap_area((left, top, right, bottom), face_rect(face)) for face in face_boxes)
+        face_penalty = face_overlap / max(1, bubble_w * bubble_h) * 200.0
         penalty = 0.0
         if name.startswith("bottom"):
-            penalty += 6.0
-        if name == "bottom-right":
-            penalty += 2.0  # mild anti-watermark bias without punishing clean top-right space
-        scores.append((activity + penalty, name))
+            penalty += 10.0
+        if name.endswith("right"):
+            penalty += 1.5
+        scores.append((activity + penalty + face_penalty, name))
 
     scores.sort(key=lambda item: item[0])
     return scores[0][1]
+
+
+def face_rect(face: FaceBox) -> tuple[int, int, int, int]:
+    return (face.x, face.y, face.x + face.w, face.y + face.h)
+
+
+def _overlap_area(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> int:
+    left = max(a[0], b[0])
+    top = max(a[1], b[1])
+    right = min(a[2], b[2])
+    bottom = min(a[3], b[3])
+    if right <= left or bottom <= top:
+        return 0
+    return (right - left) * (bottom - top)
 
 
 def _anchor_to_position(
@@ -233,8 +315,8 @@ def _anchor_to_position(
     bubble_h: int,
     anchor: str,
 ) -> tuple[int, int]:
-    x_pad = 26
-    y_pad = 24
+    x_pad = 24
+    y_pad = 22
     if anchor == "top-left":
         return rect[0] + x_pad, rect[1] + y_pad
     if anchor == "top-right":
@@ -244,9 +326,17 @@ def _anchor_to_position(
     return rect[2] - bubble_w - x_pad, rect[3] - bubble_h - y_pad
 
 
-def _estimate_speaker_point(rect: tuple[int, int, int, int], anchor: str) -> tuple[int, int]:
+def _estimate_speaker_point(
+    rect: tuple[int, int, int, int],
+    anchor: str,
+    face_boxes: list[FaceBox],
+) -> tuple[int, int]:
     panel_w = rect[2] - rect[0]
     panel_h = rect[3] - rect[1]
+    if face_boxes:
+        face = face_boxes[0]
+        return rect[0] + face.x + face.w // 2, rect[1] + min(panel_h - 12, face.y + face.h)
+
     if anchor == "top-left":
         return rect[0] + int(panel_w * 0.62), rect[1] + int(panel_h * 0.58)
     if anchor == "top-right":

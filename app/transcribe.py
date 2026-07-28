@@ -1,14 +1,19 @@
 from functools import lru_cache
 from pathlib import Path
 
-from faster_whisper import WhisperModel
-
 from app.config import get_settings
 from app.models import WordTiming
 
 
 @lru_cache(maxsize=1)
-def _get_model() -> WhisperModel:
+def _get_model():
+    try:
+        from faster_whisper import WhisperModel
+    except Exception as exc:  # pragma: no cover - dependency availability varies in tests
+        raise RuntimeError(
+            "faster-whisper is not installed. Run `pip install -r requirements.txt`."
+        ) from exc
+
     settings = get_settings()
     return WhisperModel(
         settings.whisper_model,

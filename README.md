@@ -1,37 +1,37 @@
 # Video Comic MVP
 
-A deliberately narrow local app that converts a short spoken-performance clip plus a style reference into one comic page.
+A deliberately narrow local app that converts a spoken-performance clip plus a style reference into one or more comic pages.
 
 ## What it does
 
 1. Extracts mono audio with FFmpeg.
 2. Transcribes locally with Faster Whisper and word timestamps.
 3. Groups words into timed narrative beats.
-4. Uses OpenRouter structured output to choose and rank up to six panels.
+4. Uses OpenRouter structured output to choose and rank the beats.
    - If no OpenRouter key is configured, deterministic heuristics take over.
 5. Extracts multiple candidate frames for each selected beat and scores them locally.
-6. Prefers frames that are sharper, better composed, and more likely to leave room for a speech bubble.
+6. Prefers frames that are sharper, better exposed, and more likely to read clearly in a panel.
 7. Sends the chosen frame plus the style reference to OpenAI's image-edit endpoint.
-8. Builds a deterministic 1536×2048 comic page locally with bubble-aware placement and readable speech bubbles.
+8. Builds deterministic comic pages locally with face-aware cropping and bubble-aware placement.
+9. Lets you manually regenerate a single panel, optionally refining its art direction or lettering.
 
 The image model never renders the lettering. This is intentional; exact text is software's job, not a probabilistic art goblin's.
 
-## MVP constraints
+## Current scope
 
-- Best with 15–90 second monologues or stand-up clips.
-- Hard limit defaults to 120 seconds.
-- One page, up to six panels.
+- Best with monologues, stand-up, and short conversational clips.
+- Hard limit defaults to 300 seconds.
+- Supports multi-page output.
+- Up to 6 panels per page and 18 total selected panels by default.
 - No speaker diarization yet.
-- Frame selection is quality-scored, but still lightweight rather than semantically omniscient.
 - Every panel is stylized independently, so visual continuity can vary.
 
-## Improvements in this build
+## Upgrades in this build
 
-- **Better frame selection**: each beat now samples several timestamps and chooses the best candidate using sharpness, face prominence, composition, and available bubble space.
-- **Bubble-aware composition**: bubbles evaluate multiple candidate positions and try to avoid faces while seeking visually quieter regions.
-- **Smaller typography under pressure**: long lines now shrink more aggressively before they engulf the entire panel like a bureaucratic memo.
-- **Better crop behavior**: panels use face-aware centering when being fit into comic rectangles, which tends to reduce accidental emphasis on watermarks and platform furniture.
-- **Debuggability**: each job saves `frame-selection.json` plus the candidate frames used in scoring.
+- **Face-aware bubble placement**: bubble placement now penalizes overlap with detected faces.
+- **Face-aware crops**: panel fitting tries to keep the largest detected face present and readable.
+- **Manual panel regeneration**: the UI exposes per-panel regenerate controls with optional extra art direction and lettering edits.
+- **Multi-page output**: longer clips can spill into multiple comic pages instead of being crammed into one.
 
 ## Requirements
 
@@ -84,8 +84,6 @@ WHISPER_DEVICE=cpu
 WHISPER_COMPUTE_TYPE=int8
 ```
 
-CTranslate2 GPU support is platform-dependent, so make the boring path work before summoning the optimization demons.
-
 ## Debug mode
 
 Start with:
@@ -104,11 +102,20 @@ Generated jobs live in `var/jobs/<job-id>/` and include:
 - selected source frames
 - candidate frames under `frame-candidates/`
 - generated panel images
-- `comic.png`
+- generated page images under `pages/`
 - `manifest.json`
 - word-level `transcript.json`
-- frame scoring details in `frame-selection.json`
 - `openrouter-error.txt` when the editorial request fails and heuristics take over
+
+## Chrome DevTools automatic workspace
+
+The project includes and serves:
+
+```text
+/.well-known/appspecific/com.chrome.devtools.json
+```
+
+When the FastAPI server starts, it refreshes the file with the current absolute project root while retaining a stable UUID. The endpoint is served only for `localhost`, `127.0.0.1`, or `::1`, since the descriptor contains a local filesystem path.
 
 ## API
 
@@ -119,7 +126,24 @@ Multipart fields:
 - `video`
 - `style_reference`
 
-Returns the transcript, selected beats, and final comic path.
+Returns the transcript, selected beats, generated pages, and per-panel metadata.
+
+### `GET /api/jobs/{job_id}`
+
+Returns a previously generated job manifest.
+
+### `POST /api/jobs/{job_id}/panels/{panel_index}/regenerate`
+
+JSON body:
+
+```json
+{
+  "bubble_text": "Optional updated lettering",
+  "prompt_suffix": "Optional extra art direction"
+}
+```
+
+Re-stylizes a single panel and re-composes the affected pages.
 
 ### `GET /api/health`
 
@@ -131,6 +155,31 @@ Shows whether OpenRouter, OpenAI, and stylization are configured.
 pytest
 ```
 
-## Likely next upgrades
+## macOS native-library warning / Python version
 
-The highest-value upgrades are speaker diarization, laughter detection, better visual expression scoring, and an editable intermediate panel plan. Resist the urge to implement all four in one caffeinated spiral.
+Use Python **3.11, 3.12, or 3.13** for this project. Python 3.12 is the recommended boring option.
+
+OpenCV and Faster Whisper's PyAV dependency both bundle FFmpeg libraries. Earlier builds loaded both into the FastAPI process on macOS, which could produce duplicate `AVFFrameReceiver` / `AVFAudioReceiver` Objective-C class warnings and unstable crashes. Face detection now runs in an isolated worker process so OpenCV and PyAV do not share the same native address space.
+
+Recreate an existing Python 3.14 environment with Python 3.12:
+
+```bash
+deactivate 2>/dev/null || true
+rm -rf .venv
+brew install python@3.12
+/opt/homebrew/bin/python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+cp -n .env.example .env
+./run.sh
+```
+
+The default transcription settings are now CPU + INT8:
+
+```dotenv
+WHISPER_DEVICE=cpu
+WHISPER_COMPUTE_TYPE=int8
+```
+
+This avoids the harmless but noisy warning about converting float16 model weights to float32 on a CPU backend.
