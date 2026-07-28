@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Video → Comic</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <p class="eyebrow">Performance-aware comicifier</p>
+        <h1>Turn a clip into a comic page.</h1>
+        <p class="lede">
+          Upload a short spoken performance and one visual style reference.
+          Timing chooses the moments; AI redraws the panels; local code handles the lettering.
+        </p>
+      </header>
+
+      <form id="generator" class="card">
+        <label class="drop">
+          <span>Video clip</span>
+          <small>MP4, MOV, M4V, or WebM — 2 minutes or less</small>
+          <input id="video" name="video" type="file" accept="video/*" required />
+        </label>
+
+        <label class="drop">
+          <span>Style reference</span>
+          <small>PNG, JPEG, or WebP</small>
+          <input id="style" name="style_reference" type="file" accept="image/*" required />
+        </label>
+
+        <button type="submit">Generate comic</button>
+        <p id="status" role="status"></p>
+      </form>
+
+      <section id="result" class="result" hidden>
+        <div class="result-heading">
+          <h2>Your comic</h2>
+          <a id="download" download="comic.png">Save PNG</a>
+        </div>
+        <img id="comic" alt="Generated comic page" />
+        <details>
+          <summary>Transcript and panel plan</summary>
+          <pre id="manifest"></pre>
+        </details>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
