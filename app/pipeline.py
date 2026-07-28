@@ -27,6 +27,11 @@ def generate_comic(
     settings: Settings,
     *,
     style_strength: str = "balanced",
+    source_type: str = "upload",
+    source_title: str | None = None,
+    source_url: str | None = None,
+    source_start: float | None = None,
+    source_end: float | None = None,
 ) -> JobManifest:
     assert_ffmpeg_available()
     _validate_style_reference(style_reference_path)
@@ -128,6 +133,11 @@ def generate_comic(
         page_count=0,
         panels=panels,
         style_strength=style_strength,
+        source_type=source_type,
+        source_title=source_title,
+        source_url=source_url,
+        source_start=source_start,
+        source_end=source_end,
         used_openrouter=used_openrouter,
         used_stylization=not settings.skip_stylization,
     )

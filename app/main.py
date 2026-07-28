@@ -11,6 +11,12 @@ from app.devtools_workspace import ensure_devtools_workspace_file
 from app.models import RegeneratePanelRequest
 from app.pipeline import PipelineError, generate_comic, load_manifest, regenerate_panel
 from app.vision import face_detection_status
+from app.youtube_import import (
+    YouTubeImportError,
+    download_youtube_section,
+    parse_timestamp,
+    youtube_import_status,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
@@ -18,7 +24,7 @@ STATIC_DIR = BASE_DIR / "static"
 settings = get_settings()
 DEVTOOLS_WORKSPACE_FILE = ensure_devtools_workspace_file(PROJECT_ROOT)
 
-app = FastAPI(title="Video Comic MVP", version="0.2.0")
+app = FastAPI(title="Video Comic MVP", version="0.3.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/jobs", StaticFiles(directory=settings.work_dir), name="jobs")
 
@@ -33,8 +39,6 @@ def index() -> FileResponse:
     include_in_schema=False,
 )
 def chrome_devtools_workspace(request: Request) -> FileResponse:
-    # This descriptor reveals a local absolute path and is only useful when the
-    # app itself is being debugged on the local machine.
     hostname = (request.url.hostname or "").lower()
     if hostname not in {"localhost", "127.0.0.1", "::1"}:
         raise HTTPException(status_code=404, detail="Not found")
@@ -54,30 +58,82 @@ def health() -> dict[str, object]:
         "max_panels_per_page": settings.max_panels_per_page,
         "max_total_panels": settings.max_total_panels,
         "face_detection": face_detection_status(),
+        "youtube_import": youtube_import_status(),
     }
 
 
 @app.post("/api/generate")
 def generate(
-    video: UploadFile = File(...),
     style_reference: UploadFile = File(...),
+    video: UploadFile | None = File(None),
+    source_type: str = Form("upload"),
     style_strength: str = Form("balanced"),
+    youtube_url: str = Form(""),
+    youtube_start: str = Form("0"),
+    youtube_end: str = Form(""),
+    rights_confirmed: bool = Form(False),
 ) -> dict[str, object]:
-    video_suffix = _safe_suffix(video.filename, {".mp4", ".mov", ".m4v", ".webm"})
+    source_type = source_type.strip().lower()
+    if source_type not in {"upload", "youtube"}:
+        raise HTTPException(status_code=400, detail="Source type must be upload or youtube")
+
     style_suffix = _safe_suffix(
         style_reference.filename, {".png", ".jpg", ".jpeg", ".webp"}
     )
 
-    with tempfile.TemporaryDirectory(prefix="video-comic-upload-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="video-comic-input-") as temp_dir:
         temp_path = Path(temp_dir)
-        video_path = temp_path / f"video{video_suffix}"
         style_path = temp_path / f"style{style_suffix}"
-        _copy_upload(video, video_path)
         _copy_upload(style_reference, style_path)
 
+        source_title: str | None = None
+        source_url: str | None = None
+        source_start: float | None = None
+        source_end: float | None = None
+
         try:
-            manifest = generate_comic(video_path, style_path, settings, style_strength=style_strength)
-        except PipelineError as exc:
+            if source_type == "upload":
+                if video is None or not video.filename:
+                    raise PipelineError("Choose a local video file")
+                video_suffix = _safe_suffix(
+                    video.filename, {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
+                )
+                video_path = temp_path / f"video{video_suffix}"
+                _copy_upload(video, video_path)
+                source_title = video.filename
+            else:
+                if not rights_confirmed:
+                    raise YouTubeImportError(
+                        "Confirm that you own the video or have permission to use it"
+                    )
+                start_seconds = parse_timestamp(youtube_start, field_name="in time")
+                end_seconds = parse_timestamp(youtube_end, field_name="out time")
+                imported = download_youtube_section(
+                    youtube_url,
+                    start=start_seconds,
+                    end=end_seconds,
+                    output_dir=temp_path / "youtube",
+                    max_clip_seconds=settings.max_video_seconds,
+                    timeout_seconds=settings.youtube_timeout_seconds,
+                )
+                video_path = imported.path
+                source_title = imported.metadata.title
+                source_url = imported.metadata.webpage_url
+                source_start = imported.start
+                source_end = imported.end
+
+            manifest = generate_comic(
+                video_path,
+                style_path,
+                settings,
+                style_strength=style_strength,
+                source_type=source_type,
+                source_title=source_title,
+                source_url=source_url,
+                source_start=source_start,
+                source_end=source_end,
+            )
+        except (PipelineError, YouTubeImportError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
@@ -95,7 +151,11 @@ def get_job(job_id: str) -> dict[str, object]:
 
 
 @app.post("/api/jobs/{job_id}/panels/{panel_index}/regenerate")
-def regenerate_job_panel(job_id: str, panel_index: int, request: RegeneratePanelRequest) -> dict[str, object]:
+def regenerate_job_panel(
+    job_id: str,
+    panel_index: int,
+    request: RegeneratePanelRequest,
+) -> dict[str, object]:
     try:
         manifest = regenerate_panel(job_id, panel_index, request, settings)
     except PipelineError as exc:

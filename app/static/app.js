@@ -4,16 +4,52 @@ const result = document.querySelector("#result");
 const pages = document.querySelector("#pages");
 const download = document.querySelector("#download");
 const manifest = document.querySelector("#manifest");
+const sourceSummary = document.querySelector("#source-summary");
 const button = form.querySelector("button[type='submit']");
 const panelControls = document.querySelector("#panel-controls");
 
+const sourceRadios = [...document.querySelectorAll("input[name='source_type']")];
+const uploadSource = document.querySelector("#upload-source");
+const youtubeSource = document.querySelector("#youtube-source");
+const videoInput = document.querySelector("#video");
+const youtubeInputs = [
+  document.querySelector("#youtube-url"),
+  document.querySelector("#youtube-start"),
+  document.querySelector("#youtube-end"),
+  document.querySelector("#rights-confirmed"),
+];
+
 let currentManifest = null;
+
+sourceRadios.forEach((radio) => radio.addEventListener("change", syncSourceMode));
+syncSourceMode();
+
+function syncSourceMode() {
+  const mode = sourceRadios.find((radio) => radio.checked)?.value || "upload";
+  const usingYouTube = mode === "youtube";
+
+  uploadSource.hidden = usingYouTube;
+  youtubeSource.hidden = !usingYouTube;
+  videoInput.disabled = usingYouTube;
+  videoInput.required = !usingYouTube;
+
+  youtubeInputs.forEach((input) => {
+    input.disabled = !usingYouTube;
+  });
+  document.querySelector("#youtube-url").required = usingYouTube;
+  document.querySelector("#youtube-end").required = usingYouTube;
+  document.querySelector("#rights-confirmed").required = usingYouTube;
+}
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   result.hidden = true;
   button.disabled = true;
-  status.textContent = "Transcribing, selecting frames, re-illustrating, and arguing with aesthetic probability fields…";
+
+  const mode = sourceRadios.find((radio) => radio.checked)?.value || "upload";
+  status.textContent = mode === "youtube"
+    ? "Fetching the selected YouTube section, then transcribing and illustrating it…"
+    : "Transcribing, selecting frames, re-illustrating, and arguing with aesthetic probability fields…";
 
   const body = new FormData(form);
 
@@ -29,7 +65,7 @@ form.addEventListener("submit", async (event) => {
 
     currentManifest = data;
     renderResult(data);
-    status.textContent = `Done. ${data.panels.length} panels across ${data.page_count} page${data.page_count === 1 ? "" : "s"}. Style strength: ${data.style_strength}.`;
+    status.textContent = `Done. ${data.panels.length} panels across ${data.page_count} page${data.page_count === 1 ? "" : "s"}.`;
     result.hidden = false;
     result.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
@@ -45,6 +81,13 @@ function renderResult(data) {
   download.href = data.comic_paths?.[0] || data.comic_path;
   download.textContent = data.page_count > 1 ? "Save first page" : "Save PNG";
   manifest.textContent = JSON.stringify(data, null, 2);
+
+  if (data.source_type === "youtube") {
+    const range = `${formatTimestamp(data.source_start)}–${formatTimestamp(data.source_end)}`;
+    sourceSummary.textContent = `${data.source_title || "YouTube clip"} · ${range}`;
+  } else {
+    sourceSummary.textContent = data.source_title || "Uploaded clip";
+  }
 }
 
 function renderPages(paths) {
@@ -163,10 +206,20 @@ async function regeneratePanel(jobId, panelIndex, body, state, ...buttons) {
     }
     currentManifest = data;
     renderResult(data);
-    state.textContent = "Updated.";
   } catch (error) {
     state.textContent = error instanceof Error ? error.message : String(error);
   } finally {
     buttons.forEach((btn) => (btn.disabled = false));
   }
+}
+
+function formatTimestamp(value) {
+  if (value === null || value === undefined) return "?";
+  const total = Math.max(0, Number(value));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = Math.floor(total % 60);
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
 }

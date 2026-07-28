@@ -12,24 +12,70 @@
         <p class="eyebrow">Performance-aware comicifier</p>
         <h1>Turn a clip into a comic page.</h1>
         <p class="lede">
-          Upload a spoken performance and one visual style reference. Timing chooses the moments,
-          AI redraws the panels, local code handles the lettering, and now longer clips can spill into multiple pages.
+          Upload a spoken performance—or select a section from YouTube—and provide one visual style reference.
+          Timing chooses the moments, AI redraws the panels, and local code handles the lettering.
         </p>
       </header>
 
       <form id="generator" class="card">
-        <label class="drop">
-          <span>Video clip</span>
-          <small>MP4, MOV, M4V, or WebM — up to 5 minutes</small>
-          <input id="video" name="video" type="file" accept="video/*" required />
-        </label>
+        <fieldset class="source-picker">
+          <legend>Video source</legend>
+          <label>
+            <input type="radio" name="source_type" value="upload" checked />
+            <span>Upload a file</span>
+          </label>
+          <label>
+            <input type="radio" name="source_type" value="youtube" />
+            <span>YouTube section</span>
+          </label>
+        </fieldset>
+
+        <section id="upload-source" class="source-panel">
+          <label class="drop">
+            <span>Video clip</span>
+            <small>MP4, MOV, M4V, MKV, or WebM — up to 5 minutes</small>
+            <input id="video" name="video" type="file" accept="video/*" required />
+          </label>
+        </section>
+
+        <section id="youtube-source" class="source-panel" hidden>
+          <label class="drop">
+            <span>YouTube URL</span>
+            <small>Public YouTube or youtu.be video link</small>
+            <input
+              id="youtube-url"
+              name="youtube_url"
+              type="url"
+              placeholder="https://www.youtube.com/watch?v=…"
+              disabled
+            />
+          </label>
+
+          <div class="time-grid">
+            <label class="drop compact">
+              <span>In time</span>
+              <small>Seconds, MM:SS, or HH:MM:SS</small>
+              <input id="youtube-start" name="youtube_start" type="text" value="0:00" disabled />
+            </label>
+
+            <label class="drop compact">
+              <span>Out time</span>
+              <small>Example: 1:42.5</small>
+              <input id="youtube-end" name="youtube_end" type="text" placeholder="0:45" disabled />
+            </label>
+          </div>
+
+          <label class="rights-confirmation">
+            <input id="rights-confirmed" name="rights_confirmed" type="checkbox" value="true" disabled />
+            <span>I own this video or have permission to use this section.</span>
+          </label>
+        </section>
 
         <label class="drop">
           <span>Style reference</span>
           <small>PNG, JPEG, or WebP</small>
           <input id="style" name="style_reference" type="file" accept="image/*" required />
         </label>
-
 
         <label class="drop compact">
           <span>Style strength</span>
@@ -47,7 +93,10 @@
 
       <section id="result" class="result" hidden>
         <div class="result-heading">
-          <h2>Your comic</h2>
+          <div>
+            <h2>Your comic</h2>
+            <p id="source-summary" class="source-summary"></p>
+          </div>
           <a id="download" download="comic.png">Save PNG</a>
         </div>
 
@@ -55,7 +104,7 @@
 
         <details open>
           <summary>Panel controls</summary>
-          <p class="controls-note">Regenerate individual panels, optionally refine the art direction, or just edit the balloon text and recompose the page.</p>
+          <p class="controls-note">Regenerate individual panels, refine the art direction, or edit the balloon text and recompose the page.</p>
           <div id="panel-controls" class="panel-grid"></div>
         </details>
 

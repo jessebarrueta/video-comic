@@ -55,6 +55,11 @@ class JobManifest(BaseModel):
     page_count: int = 1
     panels: list[GeneratedPanel] = Field(default_factory=list)
     style_strength: str = "balanced"
+    source_type: str = "upload"
+    source_title: str | None = None
+    source_url: str | None = None
+    source_start: float | None = None
+    source_end: float | None = None
     used_openrouter: bool
     used_stylization: bool
 

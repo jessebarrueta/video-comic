@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     max_video_seconds: int = 300
     max_panels_per_page: int = 6
     max_total_panels: int = 18
+    youtube_timeout_seconds: int = 900
     skip_stylization: bool = False
     work_dir: Path = Path("./var/jobs")
 

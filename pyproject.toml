@@ -17,6 +17,7 @@ dependencies = [
   "faster-whisper>=1.1",
   "pydantic-settings>=2.4",
   "numpy>=1.26",
+  "yt-dlp>=2025.1",
 ]
 
 [project.optional-dependencies]
